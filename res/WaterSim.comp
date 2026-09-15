@@ -1,0 +1,67 @@
+#version 430 core
+layout (local_size_x = 32, local_size_y = 32) in;
+
+struct Water{
+    float height;
+    float velocity;
+};
+
+layout(std430, binding = 0) readonly buffer WaterBufferInput
+{
+    Water water_input[];
+};
+
+layout(std430, binding = 1) writeonly buffer WaterBufferOuput
+{
+    Water water_output[];
+};
+
+uniform uint u_numWater;
+uniform float u_Surface;
+uniform float u_WaveSpeed;
+uniform float u_PosDumping; 
+uniform float u_VelDumping; 
+uniform float u_DeltaTime; 
+uniform uint u_Width; 
+uniform uint u_Height; 
+
+float PointHeight(uint x, uint y) {
+    return water_input[y * u_Width + x].height;
+}
+
+void main()
+{
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    if (x >= u_Width || y >= u_Height)
+        return;
+
+    uint id = y * u_Width + x;
+    
+    Water current = water_input[id];
+
+    float h_Left = PointHeight(x, y);
+    float h_Right = PointHeight(x, y);
+    float h_Top = PointHeight(x, y);
+    float h_Bottom = PointHeight(x, y);
+
+    if (x > 0) h_Left = PointHeight(x - 1, y);
+    if (y > 0) h_Right = PointHeight(x, y - 1);
+    if (x < u_Width - 1) h_Top = PointHeight(x + 1, y);
+    if (y < u_Height - 1) h_Bottom = PointHeight(x, y + 1);
+
+    float sum_h = h_Left + h_Right + h_Top + h_Bottom;
+
+    float surface2 = u_Surface * u_Surface;
+    float wave_speed2 = u_WaveSpeed * u_WaveSpeed;
+
+    float vel = current.velocity + (sum_h - 4 * current.height) * u_DeltaTime * wave_speed2 / surface2;
+    float h = current.height + (0.25 * sum_h - current.height) * u_PosDumping;
+
+    vel *= u_VelDumping;
+    h = h + vel * u_DeltaTime;
+
+    water_output[id].height = h;
+    water_output[id].velocity = vel;
+}

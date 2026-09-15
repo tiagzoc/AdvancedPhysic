@@ -1,0 +1,507 @@
+#version 430 core
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct Collider
+{
+    mat4 rotation;
+    vec4 position; 
+    vec4 half_extent;
+    ivec4 cell_coordinates;
+    uint entity_index;   
+    uint type;
+    int pad[2];
+};
+
+struct Impact
+{
+    vec4 local_collision_point_1;
+    vec4 local_collision_point_2;
+    vec4 normal;
+    float penetration;
+    uint entity_index1;
+    uint entity_index2;
+    int pad;
+};
+
+layout(std430, binding = 0) readonly buffer CollidersBuffer
+{
+    Collider colliders[];
+};
+
+layout(std430, binding = 1) writeonly buffer ImpactsBuffer
+{
+    Impact impacts[];
+};  
+
+layout(binding = 2) uniform atomic_uint impactCount;
+
+uniform uint numColliders;
+uniform uint maxImpacts;
+
+float Radius(Collider c)
+{
+    return max(c.half_extent.x, max(c.half_extent.y, c.half_extent.z));
+}
+
+bool CheckCollision_Sphere_Sphere(Collider sphere1, Collider sphere2)
+{    
+    vec3 delta = sphere2.position.xyz - sphere1.position.xyz;
+    float sq_distance = dot(delta, delta);
+
+    float r1 = Radius(sphere1);
+    float r2 = Radius(sphere2);
+    float sum_radii = r1 + r2;
+    if(sq_distance > sum_radii * sum_radii) return false; // No collision
+
+    float d = sqrt(sq_distance);
+
+    uint i_impact = atomicCounterIncrement(impactCount);
+    if(i_impact >= maxImpacts) return false; // No more space to store impacts
+    
+    vec4 n = vec4(0.0, 1.0, 0.0, 0.0); 
+    if(d > 0.0) n = vec4(delta.x / d, delta.y / d, delta.z / d, 0.0);
+
+    impacts[i_impact].normal = n;
+    impacts[i_impact].penetration = sum_radii - d;
+    impacts[i_impact].local_collision_point_1 = n * r1;
+    impacts[i_impact].local_collision_point_2 = -n * r2;
+    impacts[i_impact].entity_index1 = sphere1.entity_index;
+    impacts[i_impact].entity_index2 = sphere2.entity_index;
+
+    return true; // Placeholder return value
+}
+
+bool CheckCollision_AABB_Sphere(Collider aabb, Collider sphere)
+{
+    float r = Radius(sphere);
+
+    vec3 delta = sphere.position.xyz - aabb.position.xyz;
+    vec3 closest_point = clamp(delta, -aabb.half_extent.xyz, aabb.half_extent.xyz);
+    vec3 difference = delta - closest_point;
+    
+    float sq_distance = dot(difference, difference);
+    if(sq_distance > r * r) return false; // No collision
+
+    uint i_impact = atomicCounterIncrement(impactCount);
+    if(i_impact >= maxImpacts) return false; // No more space to store impacts
+
+    float d = sqrt(sq_distance);
+    vec3 collision_normal = vec3( 0, 1, 0 );
+    if (d == 0)
+        collision_normal = normalize(delta);
+    else
+        collision_normal = difference / d;
+
+    impacts[i_impact].local_collision_point_1 = vec4(0.0); 
+    impacts[i_impact].local_collision_point_2 = vec4(-collision_normal * r, 0.0);
+    impacts[i_impact].normal = vec4(collision_normal, 0.0);
+    impacts[i_impact].penetration = r - d;
+    impacts[i_impact].entity_index1 = aabb.entity_index;
+    impacts[i_impact].entity_index2 = sphere.entity_index;
+
+    return true;
+}
+
+vec3 FACES[6] = vec3[6](
+    vec3(-1,  0,  0), vec3(1, 0, 0),
+    vec3( 0, -1,  0), vec3(0, 1, 0),
+    vec3( 0,  0, -1), vec3(0, 0, 1)
+);
+
+bool CheckCollision_AABB_AABB(Collider aabb1, Collider aabb2)
+{
+    vec3 delta = aabb2.position.xyz - aabb1.position.xyz;
+    vec3 sum_half_extents = aabb1.half_extent.xyz + aabb2.half_extent.xyz;
+    if (
+        abs(delta.x) > sum_half_extents.x ||
+        abs(delta.y) > sum_half_extents.y ||
+        abs(delta.z) > sum_half_extents.z
+        ) return false; // NO COLLISION
+
+    uint i_impact = atomicCounterIncrement(impactCount);
+    if(i_impact >= maxImpacts) return false; // No more space to store impacts
+
+    vec3 max1 = aabb1.position.xyz + aabb1.half_extent.xyz;
+    vec3 min1 = aabb1.position.xyz - aabb1.half_extent.xyz;
+
+    vec3 max2 = aabb2.position.xyz + aabb2.half_extent.xyz;
+    vec3 min2 = aabb2.position.xyz - aabb2.half_extent.xyz;
+
+    float distances[6] = float[6](
+        max2.x - min1.x,
+        max1.x - min2.x,
+        max2.y - min1.y,
+        max1.y - min2.y,
+        max2.z - min1.z,
+        max1.z - min2.z
+    );
+
+    float penetration = 1e10;
+    vec3 bestAxis = vec3( 0, 1, 0 );
+
+    for (int i = 0; i < 6; ++i)
+    {
+        if (distances[i] < penetration) {
+            penetration = distances[i];
+            bestAxis = FACES[i];
+        }
+    }
+
+    impacts[i_impact].normal = vec4(bestAxis, 0.0);
+    impacts[i_impact].penetration = penetration;
+    impacts[i_impact].local_collision_point_1 = vec4(0.0);
+    impacts[i_impact].local_collision_point_2 = vec4(0.0);
+    impacts[i_impact].entity_index1 = aabb1.entity_index;
+    impacts[i_impact].entity_index2 = aabb2.entity_index;
+
+    return true;
+}
+
+bool CheckCollision_Sphere_OBB(Collider sphere, Collider obb)
+{
+    // Placeholder for sphere-box collision detection
+    return false;
+}
+
+bool CheckCollision_AABB_OBB(Collider aabb, Collider obb)
+{
+    // Placeholder for sphere-box collision detection
+    return false;
+}
+
+// bool CheckCollision_OBB_OBB(Collider obb1, Collider obb2)
+// {
+//     mat3 A = mat3(
+//         obb1.rotation[0].xyz,
+//         obb1.rotation[1].xyz,
+//         obb1.rotation[2].xyz
+//     );
+
+//     mat3 B = mat3(
+//         obb2.rotation[0].xyz,
+//         obb2.rotation[1].xyz,
+//         obb2.rotation[2].xyz
+//     );
+
+//     vec3 delta = obb2.position.xyz - obb1.position.xyz;
+//     mat3 transpose_A = transpose(A);
+//     mat3 transpose_B = transpose(B);
+//     vec3 t = delta;
+
+//     mat3 R = transpose_A * B;
+//     mat3 AbsR;
+//     for (int i = 0; i < 3; ++i)
+//     {
+//         for (int j = 0; j < 3; ++j)
+//         {
+//             AbsR[i][j] = abs(R[i][j]) + 1e-6;
+//         }
+//     }
+
+//     float minPenetration = 1e10;    
+//     vec3 bestAxis = vec3(0.0, 1.0, 0.0);
+
+//     const vec3 axesA[3] = vec3[3] (
+//         normalize(obb1.rotation[0]),
+//         normalize(obb1.rotation[1]),
+//         normalize(obb1.rotation[2])
+//     );
+
+//     const vec3 axesB[3] = vec3[3] (
+//         normalize(obb2.rotation[0]),
+//         normalize(obb2.rotation[1]),
+//         normalize(obb2.rotation[2])
+//     );  
+
+//     // Axes locaux OBB1 (A0, A1, A2)
+//     for (int i = 0; i < 3; ++i)
+//     {
+//         float r1 = obb1.half_extent[i];
+//         float r2 = obb2.half_extent.x * AbsR[i][0] + obb2.half_extent.y * AbsR[i][1] + obb2.half_extent.z * AbsR[i][2];
+
+//         float penetration = (r1 + r2) - abs(t[i]);
+//         if (penetration < 0.0) return false;
+
+//         if (penetration < minPenetration)
+//         {
+//             minPenetration = penetration;
+//             bestAxis = axesA[i];
+//         }
+//     }
+
+//     // Axes locaux OBB2 (B0, B1, B2)
+//     for (int i = 0; i < 3; ++i)
+//     {
+//         float dist = t.x * R[0][i] + t.y * R[1][i] + t.z * R[2][i];
+
+//         float r1 = obb1.half_extent.x * AbsR[0][i] + obb1.half_extent.y * AbsR[1][i] + obb1.half_extent.z * AbsR[2][i];
+//         float r2 = obb2.half_extent[i];
+
+//         float penetration = (r1 + r2) - abs(dist);
+//         if (penetration < 0.0) return false;
+
+//         if (penetration < minPenetration)
+//         {
+//             minPenetration = penetration;
+//             bestAxis = axesB[i];
+//         }
+//     }
+
+//     for (int i = 0; i < 3; ++i)
+//     {
+//         for (int j = 0; j < 3; ++j)
+//         {
+//             vec3 axis = cross(axesA[i], axesB[j]);
+//             float len2 = dot(axis, axis);
+
+//             if (len2 < 1e-6)
+//                 continue; // axes quasi parallèles
+
+//             axis = normalize(axis);
+//             float dist = abs(dot(delta, axis));
+
+//             float r1 =
+//                 obb1.half_extent.x * abs(dot(axesA[0], axis)) +
+//                 obb1.half_extent.y * abs(dot(axesA[1], axis)) +
+//                 obb1.half_extent.z * abs(dot(axesA[2], axis));
+
+//             float r2 =
+//                 obb2.half_extent.x * abs(dot(axesB[0], axis)) +
+//                 obb2.half_extent.y * abs(dot(axesB[1], axis)) +
+//                 obb2.half_extent.z * abs(dot(axesB[2], axis));
+
+//             float penetration = (r1 + r2) - dist;
+//             if (penetration < 0.0) return false;
+
+//             if (penetration < minPenetration)
+//             {
+//                 minPenetration = penetration;
+//                 bestAxis = axis;
+//             }
+//         }
+//     }
+
+//     uint i_impact = atomicCounterIncrement(impactCount);
+//     if(i_impact >= maxImpacts) return false; // No more space to store impacts
+
+//     bestAxis = normalize(bestAxis);
+//     vec3 dir = obb2.position.xyz - obb1.position.xyz;
+//     if (dot(bestAxis, dir) < 0.0) {
+//         bestAxis = -bestAxis;
+//     }
+
+//     impacts[i_impact].normal = vec4(bestAxis, 0.0);
+//     impacts[i_impact].penetration = minPenetration;
+//     impacts[i_impact].local_collision_point_1 = vec4(0.0);
+//     impacts[i_impact].local_collision_point_2 = vec4(0.0);
+//     impacts[i_impact].entity_index1 = obb1.entity_index;
+//     impacts[i_impact].entity_index2 = obb2.entity_index;
+
+//     return true;
+// }
+
+bool CheckCollision_OBB_OBB(Collider obb1, Collider obb2)
+{
+    // --- Axes locaux normalisés (world space)
+    vec3 axesA[3] = vec3[3](
+        normalize(obb1.rotation[0].xyz),
+        normalize(obb1.rotation[1].xyz),
+        normalize(obb1.rotation[2].xyz)
+    );
+
+    vec3 axesB[3] = vec3[3](
+        normalize(obb2.rotation[0].xyz),
+        normalize(obb2.rotation[1].xyz),
+        normalize(obb2.rotation[2].xyz)
+    );
+
+    vec3 halfA = obb1.half_extent.xyz;
+    vec3 halfB = obb2.half_extent.xyz;
+
+    // Centre → centre (world space)
+    vec3 delta = obb2.position.xyz - obb1.position.xyz;
+
+    float minPenetration = 1e20;
+    vec3 bestAxis = vec3(0.0);
+
+    // ==============================
+    // 1) Axes de A
+    // ==============================
+    for (int i = 0; i < 3; ++i)
+    {
+        vec3 axis = axesA[i];
+
+        float dist = abs(dot(delta, axis));
+
+        float rA = halfA[i];
+
+        float rB =
+            halfB.x * abs(dot(axesB[0], axis)) +
+            halfB.y * abs(dot(axesB[1], axis)) +
+            halfB.z * abs(dot(axesB[2], axis));
+
+        float penetration = (rA + rB) - dist;
+        if (penetration < 0.0)
+            return false;
+
+        if (penetration < minPenetration)
+        {
+            minPenetration = penetration;
+            bestAxis = axis;
+        }
+    }
+
+    // ==============================
+    // 2) Axes de B
+    // ==============================
+    for (int i = 0; i < 3; ++i)
+    {
+        vec3 axis = axesB[i];
+
+        float dist = abs(dot(delta, axis));
+
+        float rA =
+            halfA.x * abs(dot(axesA[0], axis)) +
+            halfA.y * abs(dot(axesA[1], axis)) +
+            halfA.z * abs(dot(axesA[2], axis));
+
+        float rB = halfB[i];
+
+        float penetration = (rA + rB) - dist;
+        if (penetration < 0.0)
+            return false;
+
+        if (penetration < minPenetration)
+        {
+            minPenetration = penetration;
+            bestAxis = axis;
+        }
+    }
+
+    // ==============================
+    // 3) Axes croisés (edge-edge)
+    // ==============================
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+        {
+            vec3 axis = cross(axesA[i], axesB[j]);
+
+            float len2 = dot(axis, axis);
+            if (len2 < 1e-6)
+                continue; // axes quasi parallèles
+
+            axis = normalize(axis);
+
+            float dist = abs(dot(delta, axis));
+
+            float rA =
+                halfA.x * abs(dot(axesA[0], axis)) +
+                halfA.y * abs(dot(axesA[1], axis)) +
+                halfA.z * abs(dot(axesA[2], axis));
+
+            float rB =
+                halfB.x * abs(dot(axesB[0], axis)) +
+                halfB.y * abs(dot(axesB[1], axis)) +
+                halfB.z * abs(dot(axesB[2], axis));
+
+            float penetration = (rA + rB) - dist;
+            if (penetration < 0.0)
+                return false;
+
+            if (penetration < minPenetration)
+            {
+                minPenetration = penetration;
+                bestAxis = axis;
+            }
+        }
+    }
+
+    // ==============================
+    // Collision confirmée
+    // ==============================
+
+    uint i_impact = atomicCounterIncrement(impactCount);
+    if (i_impact >= maxImpacts)
+        return false;
+
+    // Orientation cohérente de la normale (A → B)
+    if (dot(bestAxis, delta) < 0.0)
+        bestAxis = -bestAxis;
+
+    impacts[i_impact].normal = vec4(normalize(bestAxis), 0.0);
+    impacts[i_impact].penetration = minPenetration;
+    impacts[i_impact].local_collision_point_1 = vec4(0.0);
+    impacts[i_impact].local_collision_point_2 = vec4(0.0);
+    impacts[i_impact].entity_index1 = obb1.entity_index;
+    impacts[i_impact].entity_index2 = obb2.entity_index;
+
+    return true;
+}
+
+
+// ===============
+// type 0: sphere
+// type 1: AABB
+// type 2: OBB
+// ===============
+
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    if(id >= numColliders) return;
+
+    for (uint j = id + 1; j < numColliders; ++j)
+    {
+        if(colliders[j].entity_index == colliders[id].entity_index) continue; 
+        if (abs(colliders[id].cell_coordinates.x - colliders[j].cell_coordinates.x) > 1) continue;
+        if (abs(colliders[id].cell_coordinates.y - colliders[j].cell_coordinates.y) > 1) continue;
+        if (abs(colliders[id].cell_coordinates.z - colliders[j].cell_coordinates.z) > 1) continue;
+
+        if(colliders[id].type == 0)
+        {
+            if(colliders[j].type == 0)
+            {
+                CheckCollision_Sphere_Sphere(colliders[id], colliders[j]);
+            }
+            else if(colliders[j].type == 1)
+            {
+                CheckCollision_AABB_Sphere(colliders[j], colliders[id]);
+            }
+            else if(colliders[j].type == 2)
+            {
+                CheckCollision_Sphere_OBB(colliders[id], colliders[j]);
+            }
+        }
+        else if(colliders[id].type == 1)
+        {
+            if(colliders[j].type == 0)
+            {
+                CheckCollision_AABB_Sphere(colliders[id], colliders[j]);
+            }
+            else if(colliders[j].type == 1)
+            {
+                CheckCollision_AABB_AABB(colliders[id], colliders[j]);
+            }
+            else if(colliders[j].type == 2)
+            {
+                CheckCollision_AABB_OBB(colliders[id], colliders[j]);
+            }
+        }
+        else if(colliders[id].type == 2)
+        {
+            if(colliders[j].type == 0)
+            {
+                CheckCollision_Sphere_OBB(colliders[j], colliders[id]);
+            }
+            else if(colliders[j].type == 1)
+            {
+                CheckCollision_AABB_OBB(colliders[j], colliders[id]);
+            }
+            else if(colliders[j].type == 2)
+            {
+                CheckCollision_OBB_OBB(colliders[id], colliders[j]);
+            }
+        }
+    }
+}
