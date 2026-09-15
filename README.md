@@ -33,7 +33,7 @@ The project focuses on real-time 3D rendering, GPU-accelerated compute shader ph
 ```bash
 git clone <your-repo-url>
 ```
-5. Run the `PhysicAdvanced` executable.
+2. Run the `PhysicAdvanced` executable.
 
 > Note: Resources (`res/` directory containing textures, meshes, and GLSL shaders) are automatically copied next to the executable post-build.
 
