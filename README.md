@@ -3,7 +3,7 @@
 ### THIS PROJECT WAS THE WORK OF 3 PEOPLE BUT I COULDN'T FORK THE ORIGINAL REPO DUE TO MY SCHOOL'S ORGANIZATION
 ### OTHER CONTRIBUTORS :
 - [REAPERtmm](https://github.com/REAPERtmm)
-- [Skaro971](https://github.com/Skaro971)
+- [ClementTrt](https://github.com/ClementTrt)
 
 ---
 
