@@ -31,7 +31,7 @@ The project focuses on real-time 3D rendering, GPU-accelerated compute shader ph
 ### Steps
 1. Clone the repository:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/tiagzoc/AdvancedPhysic.git
 ```
 2. Run the `PhysicAdvanced` executable.
 
